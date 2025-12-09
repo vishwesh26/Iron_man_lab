@@ -1,0 +1,918 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Stark Lab | 3D Assembly</title>
+    
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Rajdhani:wght@500;700&display=swap" rel="stylesheet">
+
+    <!-- Three.js & MediaPipe -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- Add GLTFLoader for external models -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Rajdhani', sans-serif;
+            color: #00f3ff;
+        }
+
+        #input_video { display: none; width: 640px; height: 480px; }
+
+        /* HUD Overlay */
+        #hud {
+            position: absolute; top: 0; left: 0;
+            width: 100%; height: 100%;
+            pointer-events: none;
+            background: radial-gradient(circle at center, transparent 60%, rgba(0, 10, 20, 0.8) 100%);
+        }
+
+        .header { position: absolute; top: 20px; left: 30px; }
+        h1 {
+            font-family: 'Orbitron', sans-serif;
+            margin: 0; font-size: 2rem;
+            text-shadow: 0 0 15px #00f3ff;
+            letter-spacing: 2px;
+        }
+
+        .status-panel { position: absolute; top: 20px; right: 30px; text-align: right; }
+
+        #loading {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            background: rgba(0,0,0,0.8);
+            padding: 20px;
+            border: 1px solid #00f3ff;
+            border-radius: 10px;
+            pointer-events: auto;
+        }
+
+        .loader-ring {
+            width: 40px; height: 40px;
+            border: 4px solid #333;
+            border-top: 4px solid #00f3ff;
+            border-radius: 50%;
+            margin: 0 auto 10px auto;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .gesture-icon {
+            position: absolute; bottom: 30px; left: 30px;
+            border: 1px solid rgba(0, 243, 255, 0.3);
+            background: rgba(0,0,0,0.5);
+            padding: 10px 20px;
+            border-radius: 5px;
+            font-size: 0.9rem;
+        }
+        
+        #cursor-trail {
+            position: absolute; pointer-events: none;
+            width: 20px; height: 20px;
+            border: 2px solid #00f3ff;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            box-shadow: 0 0 20px #00f3ff;
+            transition: width 0.1s, height 0.1s, border-color 0.2s;
+            z-index: 100;
+            display: none;
+        }
+        #cursor-trail.pinching {
+            background: rgba(255, 204, 0, 0.5);
+            border-color: #ffcc00;
+            width: 15px; height: 15px;
+            box-shadow: 0 0 20px #ffcc00;
+        }
+        #cursor-trail.aiming {
+            border-color: #ff0000;
+            border-width: 2px;
+            border-radius: 5px; /* Square reticle */
+            width: 30px; height: 30px;
+            box-shadow: 0 0 10px #ff0000;
+            background: rgba(255, 0, 0, 0.1);
+        }
+        #cursor-trail.aiming::after {
+            content: '+';
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            color: #ff0000; font-family: monospace;
+        }
+        
+        #progress-bar {
+            position: absolute; bottom: 30px; right: 30px;
+            width: 300px; height: 20px;
+            background: rgba(255,255,255,0.1);
+            border: 1px solid #00f3ff;
+            transform: skewX(-20deg);
+        }
+        #progress-fill {
+            width: 0%; height: 100%;
+            background: #00f3ff;
+            box-shadow: 0 0 15px #00f3ff;
+            transition: width 0.5s;
+        }
+        
+        .instruction-toast {
+            position: absolute; top: 15%; width: 100%;
+            text-align: center; color: rgba(0, 243, 255, 0.7);
+            font-size: 0.9rem; pointer-events: none;
+        }
+
+        #score-display {
+            display: none;
+            position: absolute; top: 100px; right: 30px;
+            font-size: 1.5rem; color: #ff3333;
+            text-shadow: 0 0 10px #ff0000;
+            font-family: 'Orbitron';
+        }
+    </style>
+</head>
+<body>
+
+    <video id="input_video" playsinline></video>
+    <div id="canvas-container"></div>
+    <div id="cursor-trail"></div>
+
+    <div id="hud">
+        <div class="header">
+            <h1>MARK VII LAB</h1>
+            <div style="color: #666; font-size: 0.8rem;">VIRTUAL ASSEMBLY ENVIRONMENT</div>
+        </div>
+
+        <div class="instruction-toast" id="instruction-text">
+            Palm: Camera | Point: Cursor | Fist: Grab & Move (3D) | 2 Hands: Zoom
+        </div>
+
+        <div class="status-panel">
+            <div style="font-size: 1.2rem; color: #ffcc00;" id="status-text">INITIALIZING...</div>
+            <div style="font-size: 0.8rem; color: #aaa;">GESTURE LINK: ACTIVE</div>
+        </div>
+
+        <div id="score-display">TARGETS DESTROYED: 0</div>
+
+        <div class="gesture-icon">
+            <span style="color:#aaa">GESTURE:</span> <span id="gesture-display" style="color:#fff; font-weight:bold;">NONE</span>
+        </div>
+
+        <div id="progress-bar"><div id="progress-fill"></div></div>
+
+        <div id="loading">
+            <div class="loader-ring"></div>
+            <div>Constructing 3D Environment...</div>
+            <small style="color:#888">Please allow camera access</small>
+        </div>
+    </div>
+
+    <script>
+        // --- 1. Three.js Setup ---
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x050505, 0.02);
+        
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        let cameraRadius = 10;
+        let cameraTheta = 0; 
+        let cameraPhi = Math.PI / 3;
+        
+        function updateCameraTransform() {
+            cameraPhi = Math.max(0.1, Math.min(Math.PI - 0.1, cameraPhi));
+            camera.position.x = cameraRadius * Math.sin(cameraPhi) * Math.sin(cameraTheta);
+            camera.position.z = cameraRadius * Math.sin(cameraPhi) * Math.cos(cameraTheta);
+            camera.position.y = cameraRadius * Math.cos(cameraPhi);
+            camera.lookAt(0, 1, 0);
+        }
+        updateCameraTransform();
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.shadowMap.enabled = true;
+        container.appendChild(renderer.domElement);
+
+        const ambientLight = new THREE.AmbientLight(0x404040, 2); 
+        scene.add(ambientLight);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+        dirLight.position.set(5, 10, 7);
+        dirLight.castShadow = true;
+        scene.add(dirLight);
+        const blueLight = new THREE.PointLight(0x00f3ff, 1, 20);
+        blueLight.position.set(0, 5, 0);
+        scene.add(blueLight);
+
+        const gridHelper = new THREE.GridHelper(50, 50, 0x00f3ff, 0x111111);
+        scene.add(gridHelper);
+
+        // --- 2. Materials ---
+        const matHologram = new THREE.MeshBasicMaterial({ color: 0x0066ff, wireframe: true, transparent: true, opacity: 0.3 });
+        const matIronManRed = new THREE.MeshStandardMaterial({ color: 0xaa0505, metalness: 0.6, roughness: 0.4 });
+        const matIronManGold = new THREE.MeshStandardMaterial({ color: 0xffcc00, metalness: 0.7, roughness: 0.3 });
+        const matReactorGlow = new THREE.MeshStandardMaterial({ color: 0x00f3ff, emissive: 0x00f3ff, emissiveIntensity: 1 });
+        const matGrabbed = new THREE.MeshStandardMaterial({
+            color: 0xffffff, emissive: 0x00f3ff, emissiveIntensity: 0.5,
+            transparent: true, opacity: 0.9, metalness: 0.9, roughness: 0.1
+        });
+        const matTarget = new THREE.MeshBasicMaterial({ color: 0xff0000, wireframe: true });
+
+        // --- 3. Suit Parts ---
+        const partsConfig = [
+            { id: 'head', type: 'helmet', pos: [0, 3.8, 0], label: 'Helmet' },
+            { id: 'chest', type: 'chest', pos: [0, 2.5, 0], label: 'Chest Armor' },
+            { id: 'armL', type: 'armL', pos: [-1.4, 2.5, 0], label: 'Left Gauntlet' },
+            { id: 'armR', type: 'armR', pos: [1.4, 2.5, 0], label: 'Right Gauntlet' },
+            { id: 'legL', type: 'legL', pos: [-0.6, 0.5, 0], label: 'Left Greave' },
+            { id: 'legR', type: 'legR', pos: [0.6, 0.5, 0], label: 'Right Greave' }
+        ];
+
+        const blueprints = [];
+        const looseParts = [];
+        const targets = []; // For game mode
+        const projectiles = []; // Beams
+        
+        let installedCount = 0;
+        let labState = 'assembly'; // 'assembly' or 'simulation'
+        let score = 0;
+
+        const assemblyGroup = new THREE.Group();
+        scene.add(assemblyGroup);
+
+        function setGroupMaterial(group, material, isBlueprint = false) {
+            group.traverse((child) => {
+                if (child.isMesh) {
+                    if (isBlueprint) {
+                        child.material = material.clone();
+                        if (child.userData.isReactor) {
+                             child.material.color.set(0x00f3ff);
+                             child.material.opacity = 0.8;
+                        }
+                    } else {
+                        child.material = material;
+                    }
+                }
+            });
+        }
+
+        function createCompositePart(type) {
+            const group = new THREE.Group();
+            let mainMesh, detailMesh;
+            switch (type) {
+                case 'helmet':
+                    const domeGeo = new THREE.SphereGeometry(0.5, 32, 32, 0, Math.PI * 2, 0, Math.PI / 2 + 0.2);
+                    mainMesh = new THREE.Mesh(domeGeo, matIronManRed); mainMesh.rotation.x = Math.PI; mainMesh.position.y = 0.1; group.add(mainMesh);
+                    const faceGeo = new THREE.BoxGeometry(0.6, 0.5, 0.1);
+                    detailMesh = new THREE.Mesh(faceGeo, matIronManGold); detailMesh.position.set(0, -0.2, 0.45); group.add(detailMesh);
+                    break;
+                case 'chest':
+                    const chestGeo = new THREE.BoxGeometry(1.4, 1.2, 0.5);
+                    mainMesh = new THREE.Mesh(chestGeo, matIronManRed); group.add(mainMesh);
+                    const reactorGeo = new THREE.CylinderGeometry(0.2, 0.2, 0.1, 32);
+                    detailMesh = new THREE.Mesh(reactorGeo, matReactorGlow); detailMesh.rotation.x = Math.PI / 2; detailMesh.position.z = 0.26; detailMesh.userData.isReactor = true; group.add(detailMesh);
+                    break;
+                case 'armL': case 'armR':
+                    const isLeft = type === 'armL';
+                    const side = isLeft ? -1 : 1;
+                    const bicepGeo = new THREE.CylinderGeometry(0.25, 0.2, 0.8, 16);
+                    mainMesh = new THREE.Mesh(bicepGeo, matIronManRed); mainMesh.position.y = 0.4; group.add(mainMesh);
+                    const forearmGeo = new THREE.BoxGeometry(0.35, 0.7, 0.35);
+                    const forearmMesh = new THREE.Mesh(forearmGeo, matIronManRed); forearmMesh.position.y = -0.4; group.add(forearmMesh);
+                    break;
+                case 'legL': case 'legR':
+                    const thighGeo = new THREE.CylinderGeometry(0.35, 0.3, 1.0, 16);
+                    mainMesh = new THREE.Mesh(thighGeo, matIronManRed); mainMesh.position.y = 0.6; group.add(mainMesh);
+                    const shinGeo = new THREE.BoxGeometry(0.5, 1.1, 0.5);
+                    const shinMesh = new THREE.Mesh(shinGeo, matIronManRed); shinMesh.position.y = -0.6; group.add(shinMesh);
+                    break;
+            }
+            return group;
+        }
+
+        partsConfig.forEach(cfg => {
+            const blueprintGroup = createCompositePart(cfg.type);
+            blueprintGroup.position.set(cfg.pos[0], cfg.pos[1], cfg.pos[2]);
+            blueprintGroup.userData = { id: cfg.id, isBlueprint: true };
+            setGroupMaterial(blueprintGroup, matHologram, true);
+            assemblyGroup.add(blueprintGroup);
+            blueprints.push(blueprintGroup);
+
+            const partGroup = createCompositePart(cfg.type);
+            const randomX = (Math.random() > 0.5 ? 1 : -1) * (3 + Math.random() * 3);
+            const randomY = 0.5 + Math.random() * 2;
+            const randomZ = (Math.random() - 0.5) * 4;
+            partGroup.position.set(randomX, randomY, randomZ);
+            partGroup.traverse(child => { if(child.isMesh) child.castShadow = true; });
+            partGroup.userData = { id: cfg.id, isDraggable: true, targetPos: new THREE.Vector3(cfg.pos[0], cfg.pos[1], cfg.pos[2]) };
+            scene.add(partGroup);
+            looseParts.push(partGroup);
+        });
+
+        // --- NEW: Robust External Model Loading with Fallback ---
+        const gltfLoader = new THREE.GLTFLoader();
+        // Switching to Khronos Sample Models - usually reliable
+        const helmetUrl = 'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/DamagedHelmet/glTF-Binary/DamagedHelmet.glb';
+        
+        function createFallbackArtifact() {
+            // Procedural "Alien Artifact" (Torus Knot)
+            const geo = new THREE.TorusKnotGeometry(0.6, 0.2, 100, 16);
+            const mat = new THREE.MeshStandardMaterial({ color: 0xaa00ff, metalness: 0.9, roughness: 0.1 });
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.position.set(3, 1, 3);
+            mesh.userData = { 
+                id: 'external_artifact', 
+                isDraggable: true, 
+                targetPos: new THREE.Vector3(3, 1, 3), 
+                isExternal: true,
+                originalMat: mat
+            };
+            mesh.castShadow = true;
+            scene.add(mesh);
+            looseParts.push(mesh);
+        }
+
+        gltfLoader.load(helmetUrl, (gltf) => {
+            const model = gltf.scene;
+            model.scale.set(0.8, 0.8, 0.8);
+            model.position.set(3, 1, 3); 
+            
+            model.userData = { 
+                id: 'external_helmet', 
+                isDraggable: true, 
+                targetPos: new THREE.Vector3(3, 1, 3), 
+                isExternal: true 
+            };
+
+            model.traverse((child) => {
+                if (child.isMesh) {
+                    child.userData.originalMat = child.material;
+                    child.castShadow = true;
+                }
+            });
+
+            scene.add(model);
+            looseParts.push(model); 
+        }, undefined, (error) => {
+            console.warn('Network error loading external model, switching to fallback artifact.');
+            createFallbackArtifact();
+        });
+
+        // --- Extra Procedural Object (Power Crystal) ---
+        function createPowerCrystal() {
+            const geo = new THREE.OctahedronGeometry(0.7, 0);
+            const mat = new THREE.MeshStandardMaterial({ 
+                color: 0x00ff00, 
+                emissive: 0x003300,
+                metalness: 0.1, 
+                roughness: 0.1,
+                transparent: true,
+                opacity: 0.9
+            });
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.position.set(-3, 1, 3);
+            mesh.userData = { 
+                id: 'power_crystal', 
+                isDraggable: true, 
+                targetPos: new THREE.Vector3(-3, 1, 3), 
+                isExternal: true,
+                originalMat: mat
+            };
+            mesh.castShadow = true;
+            scene.add(mesh);
+            looseParts.push(mesh);
+        }
+        createPowerCrystal();
+
+
+        const tableGeo = new THREE.BoxGeometry(10, 0.2, 4);
+        const tableMat = new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0.8 });
+        const leftTable = new THREE.Mesh(tableGeo, tableMat); leftTable.position.set(-6, 0.5, 0); scene.add(leftTable);
+        const rightTable = new THREE.Mesh(tableGeo, tableMat); rightTable.position.set(6, 0.5, 0); scene.add(rightTable);
+
+        // --- 4. Logic Variables ---
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+        let draggedObject = null;
+        const cursorLight = new THREE.PointLight(0x00f3ff, 2, 5);
+        scene.add(cursorLight);
+
+        // State for Fist Depth Control
+        let startHandScale = 0; // Initial distance between wrist and middle finger
+        let startDragDist = 0;  // Initial distance from camera to object
+        let currentDragDist = 0;
+
+        // UI Refs
+        const cursorTrail = document.getElementById('cursor-trail');
+        const statusText = document.getElementById('status-text');
+        const gestureDisplay = document.getElementById('gesture-display');
+        const progressFill = document.getElementById('progress-fill');
+        const videoElement = document.getElementById('input_video');
+        const scoreDisplay = document.getElementById('score-display');
+        const instructionText = document.getElementById('instruction-text');
+
+        let isGrabbing = false; // Also used for "isFiring" in Phase 2
+        let handX = 0, handY = 0; 
+        let lastHandX = 0, lastHandY = 0;
+        let lastZoomDist = null;
+        let lastFireTime = 0;
+
+        // --- 5. MediaPipe ---
+        function onResults(results) {
+            document.getElementById('loading').style.display = 'none';
+
+            if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+                gestureDisplay.innerText = "NO HAND";
+                cursorTrail.style.display = 'none';
+                return;
+            }
+
+            // === 1. TWO HANDS DETECTED -> ZOOM MODE ===
+            if (results.multiHandLandmarks.length === 2) {
+                handleRelease(); // Ensure we aren't dragging
+                cursorTrail.style.display = 'none';
+                
+                const hand1 = results.multiHandLandmarks[0];
+                const hand2 = results.multiHandLandmarks[1];
+                const h1 = hand1[8]; // Index tip
+                const h2 = hand2[8];
+                
+                const dist = Math.hypot(h1.x - h2.x, h1.y - h2.y);
+                
+                if (lastZoomDist !== null) {
+                    const delta = dist - lastZoomDist;
+                    cameraRadius -= delta * 15; 
+                    cameraRadius = Math.max(3, Math.min(cameraRadius, 20));
+                    statusText.innerText = "ZOOMING LAB VIEW";
+                    statusText.style.color = "#00f3ff";
+                }
+                lastZoomDist = dist;
+                gestureDisplay.innerText = "TWO HANDS: ZOOM";
+                updateCameraTransform();
+                return; 
+            }
+
+            // === 2. SINGLE HAND LOGIC ===
+            lastZoomDist = null;
+            const landmarks = results.multiHandLandmarks[0];
+            const indexTip = landmarks[8];
+            
+            handX = 1 - indexTip.x;
+            handY = indexTip.y;
+
+            // Detect Gestures
+            const isFist = detectFist(landmarks);
+            const isPalm = detectPalm(landmarks); 
+            
+            if (labState === 'assembly') {
+                handleAssemblyGestures(isFist, isPalm, landmarks);
+            } else {
+                handleSimulationGestures(isFist, isPalm, landmarks);
+            }
+
+            lastHandX = handX;
+            lastHandY = handY;
+        }
+
+        // --- Logic Helpers ---
+        function handleAssemblyGestures(isFist, isPalm, landmarks) {
+            if (isFist) {
+                // --- FIST: GRAB & MOVE ---
+                if (!isGrabbing) {
+                    isGrabbing = true;
+                    startHandScale = getHandScale(landmarks); 
+                    
+                    cursorTrail.classList.add('pinching');
+                    gestureDisplay.innerText = "FIST (GRAB)";
+                    gestureDisplay.style.color = "#ffcc00";
+                    handleGrab();
+                    
+                    if(draggedObject) {
+                        startDragDist = draggedObject.position.distanceTo(camera.position);
+                        currentDragDist = startDragDist;
+                    }
+                }
+
+                cursorTrail.style.display = 'block';
+                cursorTrail.style.left = `${handX * 100}%`;
+                cursorTrail.style.top = `${handY * 100}%`;
+
+                if (draggedObject) {
+                    const currentHandScale = getHandScale(landmarks);
+                    const scaleRatio = startHandScale / currentHandScale; 
+                    const targetDist = startDragDist * scaleRatio;
+                    currentDragDist += (targetDist - currentDragDist) * 0.1;
+                }
+
+                update3DInteraction(true);
+
+            } else if (isPalm) {
+                // --- PALM: CAMERA ---
+                if (isGrabbing) { handleRelease(); isGrabbing = false; }
+                cursorTrail.classList.remove('pinching');
+                cursorTrail.style.display = 'none'; 
+                cursorLight.visible = false;
+
+                gestureDisplay.innerText = "PALM (MOVE CAMERA)";
+                gestureDisplay.style.color = "#fff";
+                statusText.innerText = "ROTATING VIEW";
+
+                const deltaX = handX - lastHandX;
+                const deltaY = handY - lastHandY;
+
+                if (Math.abs(deltaX) > 0.002 || Math.abs(deltaY) > 0.002) {
+                    cameraTheta += deltaX * 4; 
+                    cameraPhi += deltaY * 3;   
+                }
+                updateCameraTransform();
+
+            } else {
+                // --- POINT: CURSOR ---
+                if (isGrabbing) { handleRelease(); isGrabbing = false; }
+                cursorTrail.classList.remove('pinching');
+                cursorTrail.style.display = 'block';
+                cursorTrail.style.left = `${handX * 100}%`;
+                cursorTrail.style.top = `${handY * 100}%`;
+                
+                gestureDisplay.innerText = "FINGER (CURSOR)";
+                gestureDisplay.style.color = "#00f3ff";
+                statusText.innerText = "AWAITING INPUT";
+                
+                cursorLight.visible = true;
+                update3DInteraction(false);
+            }
+        }
+
+        function handleSimulationGestures(isFist, isPalm, landmarks) {
+            // In simulation mode, cursor is a reticle
+            cursorTrail.style.display = 'block';
+            cursorTrail.classList.add('aiming');
+            cursorTrail.style.left = `${handX * 100}%`;
+            cursorTrail.style.top = `${handY * 100}%`;
+
+            // Update Aim Ray
+            mouse.x = (handX * 2) - 1;
+            mouse.y = -(handY * 2) + 1;
+            raycaster.setFromCamera(mouse, camera);
+
+            if (isFist) {
+                // --- FIST: FIRE ---
+                gestureDisplay.innerText = "FIST (FIRE)";
+                gestureDisplay.style.color = "#ff3333";
+                cursorTrail.style.borderColor = "#ff3333";
+                
+                if (Date.now() - lastFireTime > 300) { // Fire rate limit
+                    fireRepulsor();
+                    lastFireTime = Date.now();
+                }
+            } else if (isPalm) {
+                // --- PALM: CAMERA (Still allows aiming while moving) ---
+                gestureDisplay.innerText = "PALM (MOVE CAMERA)";
+                
+                const deltaX = handX - lastHandX;
+                const deltaY = handY - lastHandY;
+                if (Math.abs(deltaX) > 0.002 || Math.abs(deltaY) > 0.002) {
+                    cameraTheta += deltaX * 4; 
+                    cameraPhi += deltaY * 3;   
+                }
+                updateCameraTransform();
+            } else {
+                // --- POINT: AIM ---
+                gestureDisplay.innerText = "FINGER (AIM)";
+                gestureDisplay.style.color = "#00f3ff";
+                cursorTrail.style.borderColor = "#ff0000";
+            }
+        }
+
+        function fireRepulsor() {
+            // Visual Beam
+            const rayDir = raycaster.ray.direction.clone().normalize();
+            const startPos = camera.position.clone().add(new THREE.Vector3(0.5, -0.5, -1).applyQuaternion(camera.quaternion)); // Offset to look like hand position
+            const endPos = camera.position.clone().add(rayDir.multiplyScalar(20)); // Far point
+
+            // Check Hit
+            const intersects = raycaster.intersectObjects(targets);
+            let targetHit = null;
+            
+            if (intersects.length > 0) {
+                targetHit = intersects[0].object;
+                endPos.copy(intersects[0].point); // Beam stops at target
+                
+                // FX: Explosion
+                const flash = new THREE.PointLight(0xffaa00, 5, 10);
+                flash.position.copy(endPos);
+                scene.add(flash);
+                setTimeout(() => scene.remove(flash), 100);
+                
+                // Destroy target
+                scene.remove(targetHit);
+                targets.splice(targets.indexOf(targetHit), 1);
+                score++;
+                scoreDisplay.innerText = `TARGETS DESTROYED: ${score}`;
+                
+                // Check Wave Status
+                if (targets.length === 0) {
+                    statusText.innerText = "WAVE CLEARED";
+                    statusText.style.color = "#00ff00";
+                    setTimeout(startWave, 2000); // Respawn new wave after 2s
+                }
+            }
+
+            // Draw Beam
+            const material = new THREE.LineBasicMaterial({ color: 0xff3333, linewidth: 5 });
+            const geometry = new THREE.BufferGeometry().setFromPoints([startPos, endPos]);
+            const line = new THREE.Line(geometry, material);
+            scene.add(line);
+            
+            // FX: Screen flash/shake
+            cursorTrail.style.transform = `translate(-50%, -50%) scale(1.5)`;
+            setTimeout(() => {
+                scene.remove(line);
+                cursorTrail.style.transform = `translate(-50%, -50%) scale(1)`;
+            }, 100);
+        }
+
+        function startWave() {
+            if (labState !== 'simulation') return;
+            statusText.innerText = "INCOMING WAVE";
+            statusText.style.color = "#ff3333";
+            for(let i=0; i<5; i++) spawnTarget();
+        }
+
+        function spawnTarget() {
+            const geo = new THREE.SphereGeometry(0.5, 16, 16);
+            const mat = new THREE.MeshBasicMaterial({ color: 0xff0000, wireframe: true });
+            const sphere = new THREE.Mesh(geo, mat);
+            
+            // Random Pos around suit
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const r = 5 + Math.random() * 5;
+            
+            sphere.position.set(
+                r * Math.sin(phi) * Math.cos(theta),
+                r * Math.sin(phi) * Math.sin(theta) + 2, // Offset Y
+                r * Math.cos(phi)
+            );
+            
+            sphere.userData = { velocity: new THREE.Vector3((Math.random()-0.5)*0.02, (Math.random()-0.5)*0.02, (Math.random()-0.5)*0.02) };
+            
+            scene.add(sphere);
+            targets.push(sphere);
+        }
+
+        // --- Utils ---
+        function getHandScale(landmarks) {
+            const wrist = landmarks[0];
+            const middlePip = landmarks[9];
+            return Math.hypot(wrist.x - middlePip.x, wrist.y - middlePip.y);
+        }
+
+        function detectFist(landmarks) {
+            const tips = [8, 12, 16, 20];
+            const pips = [6, 10, 14, 18];
+            let foldedCount = 0;
+            for(let i=0; i<4; i++) {
+                if (landmarks[tips[i]].y > landmarks[pips[i]].y) foldedCount++;
+            }
+            const wrist = landmarks[0];
+            const tipDist = Math.hypot(landmarks[8].x - wrist.x, landmarks[8].y - wrist.y);
+            return foldedCount >= 3 && tipDist < 0.3; 
+        }
+
+        function detectPalm(landmarks) {
+            const tips = [8, 12, 16, 20];
+            const pips = [6, 10, 14, 18];
+            let openCount = 0;
+            for(let i=0; i<4; i++) {
+                if (landmarks[tips[i]].y < landmarks[pips[i]].y) openCount++;
+            }
+            return openCount >= 4;
+        }
+
+        function update3DInteraction(isDragging) {
+            mouse.x = (handX * 2) - 1;
+            mouse.y = -(handY * 2) + 1;
+            raycaster.setFromCamera(mouse, camera);
+
+            const rayDir = raycaster.ray.direction.clone().normalize();
+            const dist = isDragging ? currentDragDist : (cameraRadius - 2);
+            const targetPos = camera.position.clone().add(rayDir.multiplyScalar(dist));
+            cursorLight.position.copy(targetPos);
+
+            if (draggedObject && isDragging) {
+                draggedObject.position.lerp(targetPos, 0.15); 
+                draggedObject.rotation.y += 0.05;
+                statusText.innerText = "MOVING: " + getLabel(draggedObject.userData.id);
+                checkSnapPreview();
+            } else if (!isDragging) {
+                const intersects = raycaster.intersectObjects(looseParts, true);
+                if (intersects.length > 0) {
+                    document.body.style.cursor = 'pointer';
+                    cursorTrail.style.borderColor = '#fff';
+                } else {
+                    document.body.style.cursor = 'default';
+                    cursorTrail.style.borderColor = '#00f3ff';
+                }
+            }
+        }
+
+        function handleGrab() {
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(looseParts, true);
+            if (intersects.length > 0) {
+                let obj = intersects[0].object;
+                while (obj.parent && !looseParts.includes(obj)) {
+                    obj = obj.parent;
+                }
+                if (looseParts.includes(obj)) {
+                    draggedObject = obj;
+                    setGroupMaterial(draggedObject, matGrabbed);
+                }
+            }
+        }
+
+        function handleRelease() {
+            if (draggedObject) {
+                if (draggedObject.userData.isExternal) {
+                    if (draggedObject.userData.originalMat) {
+                        draggedObject.material = draggedObject.userData.originalMat;
+                    } else {
+                        draggedObject.traverse((child) => {
+                            if (child.isMesh && child.userData.originalMat) {
+                                child.material = child.userData.originalMat;
+                            }
+                        });
+                    }
+                    statusText.innerText = "OBJECT RELEASED";
+                    statusText.style.color = "#00f3ff";
+                } else {
+                    const cfg = partsConfig.find(p => p.id === draggedObject.userData.id);
+                    const originalGroup = createCompositePart(cfg.type);
+                    
+                    draggedObject.position.copy(draggedObject.position);
+                    draggedObject.rotation.copy(draggedObject.rotation);
+                    draggedObject.clear();
+                    while(originalGroup.children.length > 0) {
+                        draggedObject.add(originalGroup.children[0]);
+                    }
+                    
+                    const targetPos = draggedObject.userData.targetPos;
+                    const dist = draggedObject.position.distanceTo(targetPos);
+                    
+                    if (dist < 1.5) { assemblePart(draggedObject); }
+                }
+                draggedObject = null;
+                statusText.innerText = "AWAITING INPUT";
+                statusText.style.color = "#00f3ff";
+            }
+        }
+
+        function assemblePart(obj) {
+            const id = obj.userData.id;
+            const blueprint = blueprints.find(b => b.userData.id === id);
+            obj.position.copy(blueprint.position);
+            obj.rotation.set(0,0,0);
+            
+            const idx = looseParts.indexOf(obj);
+            if (idx > -1) looseParts.splice(idx, 1);
+            
+            blueprint.visible = false; 
+            const flash = new THREE.PointLight(0xffaa00, 5, 5);
+            flash.position.copy(obj.position);
+            scene.add(flash);
+            setTimeout(() => scene.remove(flash), 200);
+
+            installedCount++;
+            const pct = (installedCount / partsConfig.length) * 100;
+            progressFill.style.width = pct + '%';
+            if (installedCount === partsConfig.length) {
+                statusText.innerText = "SUIT ONLINE";
+                statusText.style.color = "#00ff00";
+                startVictoryAnimation();
+            }
+        }
+
+        function checkSnapPreview() {
+            if (draggedObject.userData.isExternal) return;
+            const targetPos = draggedObject.userData.targetPos;
+            const dist = draggedObject.position.distanceTo(targetPos);
+            if (dist < 1.5) {
+                statusText.innerText = "SNAP READY";
+                statusText.style.color = "#00ff00";
+                const blueprint = blueprints.find(b => b.userData.id === draggedObject.userData.id);
+                if(blueprint) blueprint.userData.isHighlighted = true;
+            } else {
+                blueprints.forEach(b => b.userData.isHighlighted = false);
+            }
+        }
+
+        function getLabel(id) {
+            if (id === 'external_helmet') return 'Battle Damaged Helmet';
+            if (id === 'external_artifact') return 'Holographic Artifact';
+            if (id === 'power_crystal') return 'Power Crystal';
+            
+            const cfg = partsConfig.find(p => p.id === id);
+            return cfg ? cfg.label : "UNKNOWN";
+        }
+
+        function startVictoryAnimation() {
+            const partsToAttach = [];
+            scene.traverse(obj => {
+                if (obj.userData && obj.userData.id && obj.userData.isDraggable && !looseParts.includes(obj)) {
+                    partsToAttach.push(obj);
+                }
+            });
+            partsToAttach.forEach(part => {
+                if (part.parent !== assemblyGroup) assemblyGroup.attach(part);
+            });
+            
+            // Switch Mode Animation
+            let spinCount = 0;
+            const animateSpin = () => {
+                assemblyGroup.rotation.y += 0.05;
+                spinCount++;
+                
+                if (spinCount > 100) {
+                    // Start Game Mode
+                    labState = 'simulation';
+                    statusText.innerText = "WEAPON SYSTEMS ENGAGED";
+                    instructionText.innerText = "TARGET PRACTICE: AIM (Finger) | FIRE (Fist)";
+                    scoreDisplay.style.display = 'block';
+                    
+                    // Clear loose parts (cleanup)
+                    looseParts.forEach(p => scene.remove(p));
+                    looseParts.length = 0;
+                    
+                    // Start first wave instead of direct spawning
+                    startWave();
+                    return; // STOP THE LOOP
+                }
+                
+                requestAnimationFrame(animateSpin);
+            };
+            animateSpin();
+        }
+
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.7 });
+        hands.onResults(onResults);
+
+        const cameraMedia = new Camera(videoElement, {
+            onFrame: async () => { await hands.send({image: videoElement}); },
+            width: 640, height: 480
+        });
+        cameraMedia.start();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            if (labState === 'assembly') {
+                looseParts.forEach((part, i) => {
+                    if (part !== draggedObject) {
+                        part.rotation.y += 0.01;
+                        part.position.y += Math.sin(Date.now() * 0.002 + i) * 0.005; 
+                    }
+                });
+                blueprints.forEach(bp => {
+                    if (bp.visible) {
+                        const targetOpacity = bp.userData.isHighlighted ? 0.8 : 0.3 + Math.sin(Date.now() * 0.005) * 0.1;
+                        bp.traverse(child => {
+                            if (child.isMesh) {
+                                const mats = Array.isArray(child.material) ? child.material : [child.material];
+                                mats.forEach(mat => { if(mat) { mat.opacity = targetOpacity; mat.transparent = true; }});
+                            }
+                        });
+                    }
+                });
+            } else {
+                // Simulation Loop
+                assemblyGroup.rotation.y += 0.005; // Slow spin of suit
+                
+                targets.forEach(t => {
+                    t.position.add(t.userData.velocity);
+                    t.rotation.x += 0.02;
+                    t.rotation.y += 0.02;
+                    // Bounce bounds
+                    if(t.position.length() > 10) t.userData.velocity.negate();
+                });
+            }
+
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
